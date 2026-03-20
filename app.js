@@ -451,46 +451,33 @@ function encodePCM(chunks, sampleRate) {
 
 // ── Recording ─────────────────────────────────────────────────────────────────
 async function startRec() {
-  // ── MOBILE: SpeechRecognition first, getUserMedia second ──────────────────
-  // On Android Chrome, getUserMedia + AudioContext can prevent SpeechRecognition
-  // from accessing the mic. Starting recognition first gives it priority.
+
   if (isMobile) {
+    // ── MOBILE PATH ─────────────────────────────────────────────────────────
+    // No AudioContext on mobile — it can conflict with SpeechRecognition at OS level.
+    // Order: recognition first → getUserMedia → MediaRecorder.
+
     phase = 'recording'; startTs = Date.now(); totalPaused = 0;
-    setUI('recording'); startTimer();
+    setUI('recording'); startTimer(); startViz(); // fake waveform, no analyser
 
     if (txEnabled) {
       txFinalText = ''; txInterimText = '';
       D.transcriptWrap.classList.remove('hidden');
       D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Starting…</span>';
       txStartRecognition();
-      await new Promise(r => setTimeout(r, 500)); // let recognition get mic first
+      await new Promise(r => setTimeout(r, 400)); // recognition establishes mic first
     }
-  }
 
-  // Get microphone stream (reuse if still alive to avoid repeated permission prompts)
-  const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
-  if (!tracksAlive) {
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      if (isMobile) { phase = 'idle'; setUI('idle'); stopTimer(); }
-      return handleMicError(err);
+    const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
+    if (!tracksAlive) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        phase = 'idle'; setUI('idle'); stopTimer(); stopViz();
+        return handleMicError(err);
+      }
     }
-  }
 
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') await audioCtx.resume();
-  wavSampleRate = audioCtx.sampleRate;
-
-  const src = audioCtx.createMediaStreamSource(stream);
-
-  analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 256;
-  analyser.smoothingTimeConstant = 0.82;
-  src.connect(analyser);
-
-  if (isMobile) {
-    // MediaRecorder for audio capture — shares mic with SpeechRecognition on Android
     mobileChunks = [];
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : '';
@@ -512,11 +499,27 @@ async function startRec() {
       buildWAV();
     };
     mobileRecorder.start(500);
-    startViz();
-    return; // phase/timer/transcription already set above
+    return;
   }
 
-  // ── DESKTOP: ScriptProcessorNode ──────────────────────────────────────────
+  // ── DESKTOP PATH ──────────────────────────────────────────────────────────
+  const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
+  if (!tracksAlive) {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) { return handleMicError(err); }
+  }
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  wavSampleRate = audioCtx.sampleRate;
+
+  const src = audioCtx.createMediaStreamSource(stream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 256;
+  analyser.smoothingTimeConstant = 0.82;
+  src.connect(analyser);
+
   scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
   const muted = audioCtx.createGain(); muted.gain.value = 0;
   src.connect(scriptProc);
@@ -589,9 +592,9 @@ function stopRec() {
 
   if (isMobile && mobileRecorder) {
     // mobileRecorder.onstop decodes the audio and calls buildWAV() asynchronously
-    if (mobileRecorder.state === 'paused') mobileRecorder.resume(); // ensure all data is flushed
+    if (mobileRecorder.state === 'paused') mobileRecorder.resume();
     mobileRecorder.stop();
-    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    // No audioCtx on mobile — it was never created
     return; // buildWAV() will be called from mobileRecorder.onstop
   }
 
@@ -684,7 +687,8 @@ function fmtDate(iso) {
 // ── Waveform ──────────────────────────────────────────────────────────────────
 function startViz() {
   D.idleHint.style.opacity = '0';
-  vizLoop();
+  // Mobile has no AudioContext/analyser — use synthetic waveform animation
+  if (isMobile) { vizLoopMobile(); } else { vizLoop(); }
 }
 function stopViz() { if (rafId) { cancelAnimationFrame(rafId); rafId = null; } }
 function vizLoop() {
@@ -698,6 +702,15 @@ function vizLoop() {
   if (history.length > bars) history.shift();
   drawBars(true);
   rafId = requestAnimationFrame(vizLoop);
+}
+function vizLoopMobile() {
+  if (phase !== 'recording') { return; }
+  const t = Date.now() / 250;
+  const amp = Math.max(0.05, 0.35 + Math.sin(t) * 0.2 + Math.sin(t * 2.3) * 0.1 + (Math.random() - 0.5) * 0.12);
+  history.push(amp);
+  if (history.length > bars) history.shift();
+  drawBars(true);
+  rafId = requestAnimationFrame(vizLoopMobile);
 }
 
 function drawBars(live) {
