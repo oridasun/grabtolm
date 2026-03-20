@@ -226,7 +226,12 @@ function closeModal(m) { m.hidden = true; }
 
 // ── Transcription ─────────────────────────────────────────────────────────────
 function initTranscription() {
-  if (!txSupported) { D.txToggle.hidden = true; return; }
+  if (!txSupported) {
+    D.txToggle.hidden = true;
+    // Show permanent banner on mobile so the user knows why transcription is unavailable
+    if (isMobile) showTxUnsupportedBanner();
+    return;
+  }
   if (txLang) D.langSelect.value = txLang;
 
   D.txToggle.addEventListener('click', () => {
@@ -261,6 +266,20 @@ function txDbg(msg) {
   if (!isMobile) return;
   const el = document.getElementById('txDbgBadge');
   if (el) { el.textContent = '⚙ ' + msg; el.hidden = false; }
+}
+
+function showTxUnsupportedBanner() {
+  const b = document.createElement('div');
+  b.style.cssText = [
+    'position:fixed', 'bottom:72px', 'left:12px', 'right:12px',
+    'background:#1c1c1e', 'border:1px solid #f87171', 'border-radius:10px',
+    'padding:12px 14px', 'color:#f87171', 'font-size:13px',
+    'z-index:300', 'line-height:1.5'
+  ].join(';');
+  b.innerHTML = '<strong>⚠ Transcripción no disponible</strong><br>'
+    + 'SpeechRecognition no está soportado en este navegador. '
+    + 'Prueba con <strong>Chrome</strong> (no Samsung Browser ni Firefox).';
+  document.body.appendChild(b);
 }
 
 function txCreateRecognition() {
@@ -332,7 +351,11 @@ function txStartRecognition() {
   if (!txSupported || !txEnabled) return;
   if (!recognition) txCreateRecognition();
   recognition.lang = txLang || navigator.language;
-  try { recognition.start(); } catch (err) {
+  txDbg('start() lang=' + recognition.lang);
+  try {
+    recognition.start();
+  } catch (err) {
+    txDbg('start() threw: ' + err.name);
     if (err.name !== 'InvalidStateError') console.warn('tx start:', err);
   }
 }
