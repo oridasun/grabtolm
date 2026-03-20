@@ -22,11 +22,25 @@
         <button class="icon-btn" id="closeSettings" aria-label="Close">✕</button>
       </div>
       <div class="modal-body">
-        <p class="modal-description">
-          To save recordings to your Drive you need a Google OAuth 2.0 Client ID.
-          <a href="#" class="link" id="helpLink">How to get one →</a>
+        <p class="modal-description" style="margin-bottom:4px">
+          <strong>Transcription (Android)</strong>
         </p>
-        <label for="clientIdInput">Client ID</label>
+        <p class="modal-description">
+          Paste your <strong>Cloudflare Worker URL</strong> to enable AI transcription on mobile.
+          <a href="#" class="link" id="workerHelpLink">How to set it up →</a>
+        </p>
+        <label for="txEndpointInput">Transcription Endpoint</label>
+        <input type="url" id="txEndpointInput"
+          placeholder="https://your-worker.workers.dev"
+          autocomplete="off" spellcheck="false">
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:12px 0">
+
+        <p class="modal-description">
+          <strong>Google Drive</strong> — save recordings to your Drive.
+          <a href="#" class="link" id="helpLink">How to get a Client ID →</a>
+        </p>
+        <label for="clientIdInput">Drive Client ID</label>
         <input type="text" id="clientIdInput"
           placeholder="xxxxxxxxxx.apps.googleusercontent.com"
           autocomplete="off" spellcheck="false">

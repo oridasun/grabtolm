@@ -28,7 +28,7 @@ let analyser       = null;
 let scriptProc     = null;      // desktop only
 let mobileRecorder = null;      // mobile only — MediaRecorder avoids mic-lock conflict with SpeechRecognition
 let mobileChunks   = [];        // mobile only — raw MediaRecorder blobs
-let whisperWorker  = null;      // Web Worker for Whisper post-recording transcription (mobile)
+// Groq transcription endpoint stored per-device in localStorage ('txEndpoint')
 let lastSavedId    = null;      // ID of last autoSaved recording (for Whisper transcript update)
 let capturing      = false;     // true only while actively recording (not paused)
 let pcmChunks      = [];        // desktop only — Float32Array chunks of raw PCM
@@ -74,6 +74,7 @@ const D = {
   closeHelp:   $('closeHelp'),
   backToSettings:$('backToSettings'),
   clientIdInput:$('clientIdInput'),
+  txEndpointInput:$('txEndpointInput'),
   saveSettings:$('saveSettings'),
   canvas:      $('waveCanvas'),
   idleHint:    $('idleHint'),
@@ -129,6 +130,8 @@ async function init() {
   applyTxToggleUI();
   drawIdle();
   if (clientId) D.clientIdInput.value = clientId;
+  const savedEndpoint = localStorage.getItem('txEndpoint') || '';
+  if (D.txEndpointInput) D.txEndpointInput.value = savedEndpoint;
   initMicTip();
   await initDB();
   // Clear all saved recordings on page load for privacy (each session starts fresh)
@@ -217,6 +220,9 @@ function applyDestination() {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function persistSettings() {
+  const endpoint = (D.txEndpointInput?.value || '').trim();
+  localStorage.setItem('txEndpoint', endpoint);
+
   const val = D.clientIdInput.value.trim();
   if (val) {
     clientId = val;
@@ -269,90 +275,84 @@ function applyTxToggleUI() {
 }
 
 // ── Whisper (post-recording transcription — Android) ─────────────────────────
-function ensureWhisperWorker() {
-  if (whisperWorker) return;
-  whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
-  whisperWorker.onmessage = ({ data }) => {
-    switch (data.type) {
-      case 'status':
-        D.whisperStatusText.textContent = data.text;
-        D.whisperBarWrap.classList.add('hidden');
-        break;
-      case 'download':
-        D.whisperStatusText.textContent =
-          `Downloading model… ${data.progress}%` + (data.file ? ` (${data.file.split('/').pop()})` : '');
-        D.whisperBarWrap.classList.remove('hidden');
-        D.whisperBarFill.style.width = data.progress + '%';
-        break;
-      case 'done':
-        finishWhisper(data.text, null);
-        break;
-      case 'error':
-        finishWhisper('', data.message);
-        break;
-    }
-  };
-  whisperWorker.onerror = (e) => finishWhisper('', e.message || 'Worker error');
-}
+// ── Groq Transcription (via Cloudflare Worker proxy) ─────────────────────────
+// Language codes for Groq Whisper (ISO 639-1)
+const GROQ_LANG = {
+  'en-US':'en','en-GB':'en','es':'es','es-MX':'es',
+  'fr':'fr','de':'de','it':'it','pt-BR':'pt','pt':'pt',
+  'zh':'zh','ja':'ja',
+};
 
-let whisperTimer  = null;   // elapsed-seconds ticker
-let whisperTimeout = null;  // hard timeout
-
-function startWhisperTranscription(wavBuffer) {
-  ensureWhisperWorker();
+async function startGroqTranscription(wavBlob) {
+  const endpoint = localStorage.getItem('txEndpoint') || '';
   D.whisperProgress.classList.remove('hidden');
-  D.whisperStatusText.textContent = 'Preparing…';
   D.whisperBarWrap.classList.add('hidden');
-  D.whisperBarFill.style.width = '0%';
 
-  // Elapsed-time ticker so user sees progress is happening
-  let elapsed = 0;
-  clearInterval(whisperTimer);
-  whisperTimer = setInterval(() => {
-    elapsed++;
-    const base = D.whisperStatusText.textContent.replace(/ \(\d+s\)$/, '');
-    D.whisperStatusText.textContent = `${base} (${elapsed}s)`;
-  }, 1000);
+  if (!endpoint) {
+    D.whisperStatusText.textContent = '⚙️ Configure Transcription Endpoint in Settings to enable transcription.';
+    setTimeout(() => D.whisperProgress.classList.add('hidden'), 8000);
+    return;
+  }
 
-  // Hard timeout — 3 minutes
-  clearTimeout(whisperTimeout);
-  whisperTimeout = setTimeout(() => {
-    finishWhisper('', 'Timeout: inference took too long on this device.');
-  }, 180_000);
+  D.whisperStatusText.textContent = 'Transcribing…';
 
-  // Transfer ownership of the ArrayBuffer to the worker (zero-copy)
-  whisperWorker.postMessage({ type: 'transcribe', wavBuffer, lang: txLang }, [wavBuffer]);
+  try {
+    const lang = GROQ_LANG[txLang] || null;
+    const form = new FormData();
+    form.append('file', wavBlob, 'recording.wav');
+    if (lang) form.append('language', lang);
+
+    const res = await fetch(endpoint, { method: 'POST', body: form });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`API ${res.status}: ${errText.slice(0, 120)}`);
+    }
+
+    const data = await res.json();
+
+    // Build timestamped transcript
+    let text = '';
+    if (data.segments && data.segments.length > 0) {
+      for (const seg of data.segments) {
+        const ts = `[${fmtTime(Math.floor(seg.start))}] `;
+        const t  = (seg.text || '').trim();
+        if (t) text += ts + t + '\n';
+      }
+    } else if (data.text) {
+      text = data.text.trim();
+    }
+
+    await finishTranscription(text, null);
+
+  } catch (err) {
+    await finishTranscription('', err.message);
+  }
 }
 
-async function finishWhisper(text, errorMsg) {
-  clearInterval(whisperTimer);
-  clearTimeout(whisperTimeout);
+async function finishTranscription(text, errorMsg) {
   D.whisperProgress.classList.add('hidden');
+
   if (errorMsg) {
-    console.warn('Whisper error:', errorMsg);
-    // Show error visibly so the user knows what happened
     D.whisperStatusText.textContent = '⚠ ' + errorMsg;
     D.whisperProgress.classList.remove('hidden');
     D.whisperBarWrap.classList.add('hidden');
-    setTimeout(() => D.whisperProgress.classList.add('hidden'), 6000);
+    setTimeout(() => D.whisperProgress.classList.add('hidden'), 8000);
     return;
   }
   if (!text || !text.trim()) {
-    // Empty result — show brief notice
-    D.whisperStatusText.textContent = '⚠ No speech detected. Try speaking closer to the mic.';
+    D.whisperStatusText.textContent = '⚠ No speech detected in the recording.';
     D.whisperProgress.classList.remove('hidden');
     setTimeout(() => D.whisperProgress.classList.add('hidden'), 5000);
     return;
   }
 
-  // Populate transcript edit area
   D.transcriptEdit.textContent = text.trim();
   D.transcriptEdit.contentEditable = 'true';
   D.transcriptEditWrap.classList.remove('hidden');
   D.txActions.classList.remove('hidden');
   D.txDriveBtn.classList.toggle('hidden', destination !== 'drive');
 
-  // Update saved history entry with the transcript
   if (lastSavedId && db) {
     await dbUpdateTranscript(lastSavedId, text.trim());
     await refreshHistory();
@@ -621,7 +621,6 @@ async function startRec() {
     mobileRecorder.ondataavailable = e => { if (e.data.size > 0) mobileChunks.push(e.data); };
     mobileRecorder.onstop = async () => {
       const blob = new Blob(mobileChunks, { type: mobileRecorder.mimeType });
-      let whisperBuffer = null;
       try {
         const arrayBuf = await blob.arrayBuffer();
         const tempCtx  = new (window.AudioContext || window.webkitAudioContext)();
@@ -629,20 +628,17 @@ async function startRec() {
         await tempCtx.close();
         wavSampleRate = audioBuf.sampleRate;
         wavBlob = encodePCM([audioBuf.getChannelData(0)], wavSampleRate);
-        // Grab a separate ArrayBuffer for Whisper (Blob stays intact for download)
-        if (txEnabled) whisperBuffer = await wavBlob.arrayBuffer();
       } catch (err) {
         console.warn('Mobile audio decode failed:', err);
-        wavBlob = new Blob([], { type: 'audio/wav' });
+        // Fallback: keep raw WebM so user can at least play/download it
+        wavBlob = blob;
       }
 
-      // Show review panel (audio player + download button available immediately)
+      // Show review panel immediately (audio player + download ready)
       await buildWAV();
 
-      // Kick off Whisper transcription asynchronously
-      if (txEnabled && whisperBuffer && whisperBuffer.byteLength > 44) {
-        startWhisperTranscription(whisperBuffer);
-      }
+      // Kick off Groq transcription after showing the panel
+      if (txEnabled) startGroqTranscription(wavBlob);
     };
     mobileRecorder.start(500);
     return;
