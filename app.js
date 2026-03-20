@@ -28,6 +28,8 @@ let analyser       = null;
 let scriptProc     = null;      // desktop only
 let mobileRecorder = null;      // mobile only — MediaRecorder avoids mic-lock conflict with SpeechRecognition
 let mobileChunks   = [];        // mobile only — raw MediaRecorder blobs
+let whisperWorker  = null;      // Web Worker for Whisper post-recording transcription (mobile)
+let lastSavedId    = null;      // ID of last autoSaved recording (for Whisper transcript update)
 let capturing      = false;     // true only while actively recording (not paused)
 let pcmChunks      = [];        // desktop only — Float32Array chunks of raw PCM
 let wavSampleRate  = 44100;
@@ -110,6 +112,11 @@ const D = {
   txCopyBtn:        $('txCopyBtn'),
   txDownloadBtn:    $('txDownloadBtn'),
   txDriveBtn:       $('txDriveBtn'),
+  // Whisper (Android post-recording)
+  whisperProgress:  $('whisperProgress'),
+  whisperStatusText:$('whisperStatusText'),
+  whisperBarWrap:   $('whisperBarWrap'),
+  whisperBarFill:   $('whisperBarFill'),
 };
 const ctx = D.canvas.getContext('2d');
 
@@ -226,10 +233,10 @@ function closeModal(m) { m.hidden = true; }
 
 // ── Transcription ─────────────────────────────────────────────────────────────
 function initTranscription() {
-  if (!txSupported) {
+  // On mobile, Whisper handles transcription — SpeechRecognition not needed.
+  // On desktop, hide toggle if SpeechRecognition is unavailable.
+  if (!txSupported && !isMobile) {
     D.txToggle.hidden = true;
-    // Show permanent banner on mobile so the user knows why transcription is unavailable
-    if (isMobile) showTxUnsupportedBanner();
     return;
   }
   if (txLang) D.langSelect.value = txLang;
@@ -259,6 +266,62 @@ function applyTxToggleUI() {
   D.txToggle.setAttribute('aria-pressed', String(txEnabled));
   D.langSelect.classList.toggle('hidden', !txEnabled);
   document.querySelector('.app').classList.toggle('tx-active', txEnabled);
+}
+
+// ── Whisper (post-recording transcription — Android) ─────────────────────────
+function ensureWhisperWorker() {
+  if (whisperWorker) return;
+  whisperWorker = new Worker('./whisper-worker.js', { type: 'module' });
+  whisperWorker.onmessage = ({ data }) => {
+    switch (data.type) {
+      case 'status':
+        D.whisperStatusText.textContent = data.text;
+        D.whisperBarWrap.classList.add('hidden');
+        break;
+      case 'download':
+        D.whisperStatusText.textContent =
+          `Downloading model… ${data.progress}%` + (data.file ? ` (${data.file.split('/').pop()})` : '');
+        D.whisperBarWrap.classList.remove('hidden');
+        D.whisperBarFill.style.width = data.progress + '%';
+        break;
+      case 'done':
+        finishWhisper(data.text, null);
+        break;
+      case 'error':
+        finishWhisper('', data.message);
+        break;
+    }
+  };
+  whisperWorker.onerror = (e) => finishWhisper('', e.message || 'Worker error');
+}
+
+function startWhisperTranscription(wavBuffer) {
+  ensureWhisperWorker();
+  D.whisperProgress.classList.remove('hidden');
+  D.whisperStatusText.textContent = 'Preparing…';
+  D.whisperBarWrap.classList.add('hidden');
+  D.whisperBarFill.style.width = '0%';
+  // Transfer ownership of the ArrayBuffer to the worker (zero-copy)
+  whisperWorker.postMessage({ type: 'transcribe', wavBuffer, lang: txLang }, [wavBuffer]);
+}
+
+async function finishWhisper(text, errorMsg) {
+  D.whisperProgress.classList.add('hidden');
+  if (errorMsg) { console.warn('Whisper error:', errorMsg); return; }
+  if (!text || !text.trim()) return;
+
+  // Populate transcript edit area
+  D.transcriptEdit.textContent = text.trim();
+  D.transcriptEdit.contentEditable = 'true';
+  D.transcriptEditWrap.classList.remove('hidden');
+  D.txActions.classList.remove('hidden');
+  D.txDriveBtn.classList.toggle('hidden', destination !== 'drive');
+
+  // Update saved history entry with the transcript
+  if (lastSavedId && db) {
+    await dbUpdateTranscript(lastSavedId, text.trim());
+    await refreshHistory();
+  }
 }
 
 // Shows a small diagnostic badge in the transcript area (mobile only)
@@ -494,9 +557,9 @@ async function startRec() {
     if (txEnabled) {
       txFinalText = ''; txInterimText = '';
       D.transcriptWrap.classList.remove('hidden');
-      D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Starting…</span>';
-      txStartRecognition();
-      await new Promise(r => setTimeout(r, 400)); // recognition establishes mic first
+      D.transcriptScroll.innerHTML =
+        '<span class="tx-placeholder">Transcription will appear after recording…</span>';
+      // Mobile: Whisper runs after recording. No SpeechRecognition needed.
     }
 
     const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
@@ -516,6 +579,7 @@ async function startRec() {
     mobileRecorder.ondataavailable = e => { if (e.data.size > 0) mobileChunks.push(e.data); };
     mobileRecorder.onstop = async () => {
       const blob = new Blob(mobileChunks, { type: mobileRecorder.mimeType });
+      let whisperBuffer = null;
       try {
         const arrayBuf = await blob.arrayBuffer();
         const tempCtx  = new (window.AudioContext || window.webkitAudioContext)();
@@ -523,11 +587,20 @@ async function startRec() {
         await tempCtx.close();
         wavSampleRate = audioBuf.sampleRate;
         wavBlob = encodePCM([audioBuf.getChannelData(0)], wavSampleRate);
+        // Grab a separate ArrayBuffer for Whisper (Blob stays intact for download)
+        if (txEnabled) whisperBuffer = await wavBlob.arrayBuffer();
       } catch (err) {
         console.warn('Mobile audio decode failed:', err);
         wavBlob = new Blob([], { type: 'audio/wav' });
       }
-      buildWAV();
+
+      // Show review panel (audio player + download button available immediately)
+      await buildWAV();
+
+      // Kick off Whisper transcription asynchronously
+      if (txEnabled && whisperBuffer && whisperBuffer.byteLength > 44) {
+        startWhisperTranscription(whisperBuffer);
+      }
     };
     mobileRecorder.start(500);
     return;
@@ -667,12 +740,19 @@ async function buildWAV() {
 
   // Populate transcript area
   D.transcriptWrap.classList.add('hidden');
-  if (txEnabled && txFinalText.trim()) {
+  D.whisperProgress.classList.add('hidden'); // reset from any previous run
+
+  if (isMobile && txEnabled) {
+    // Whisper will populate this after processing — keep edit area hidden for now
+    D.transcriptEditWrap.classList.add('hidden');
+    D.txActions.classList.add('hidden');
+    // whisperProgress shown by startWhisperTranscription() called after buildWAV()
+  } else if (!isMobile && txEnabled && txFinalText.trim()) {
+    // Desktop: SpeechRecognition transcript available immediately
     D.transcriptEditWrap.classList.remove('hidden');
     D.txActions.classList.remove('hidden');
     D.transcriptEdit.textContent = txFinalText.trim();
     D.transcriptEdit.contentEditable = 'true';
-    // Show Drive button only if destination is drive
     D.txDriveBtn.classList.toggle('hidden', destination !== 'drive');
   } else {
     D.transcriptEditWrap.classList.add('hidden');
@@ -985,9 +1065,11 @@ function nextRecName() {
 
 async function autoSave() {
   if (!db || !wavBlob) return;
-  const id         = 'rec-' + Date.now();
-  const date       = new Date().toISOString();
-  const transcript = txEnabled ? txFinalText.trim() : '';
+  const id   = 'rec-' + Date.now();
+  lastSavedId = id; // Whisper will call dbUpdateTranscript(id, text) when done
+  const date = new Date().toISOString();
+  // On mobile Whisper hasn't run yet — save empty transcript, update later
+  const transcript = (!isMobile && txEnabled) ? txFinalText.trim() : '';
   const meta = { id, name: nextRecName(), date, duration: finalSecs, size: wavBlob.size, transcript };
   await dbSave(meta, wavBlob);
   await refreshHistory();

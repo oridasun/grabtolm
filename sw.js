@@ -1,4 +1,4 @@
-const CACHE = 'grabtolm-v11';
+const CACHE = 'grabtolm-v12';
 
 // Detect base path dynamically — works on localhost (/sw.js) and GitHub Pages (/grabtolm/sw.js)
 const BASE = new URL('./', self.location.href).pathname;
@@ -14,6 +14,7 @@ const SHELL = [
   BASE + 'icons/icon-512.png',
   BASE + 'icons/icon-maskable-192.png',
   BASE + 'icons/icon-maskable-512.png',
+  BASE + 'whisper-worker.js',
 ];
 
 self.addEventListener('install', e => {

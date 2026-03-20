@@ -183,6 +183,17 @@
           <audio id="audioPlayer" controls></audio>
         </div>
         <p class="rec-info" id="recInfo"></p>
+        <!-- Whisper transcription progress (Android post-recording) -->
+        <div class="whisper-progress hidden" id="whisperProgress">
+          <div class="whisper-spinner"></div>
+          <div class="whisper-info">
+            <span id="whisperStatusText">Transcribing…</span>
+            <div class="whisper-bar-wrap hidden" id="whisperBarWrap">
+              <div class="whisper-bar-fill" id="whisperBarFill"></div>
+            </div>
+          </div>
+        </div>
+
         <!-- Transcript edit area (shown after recording if transcription was on) -->
         <div class="transcript-edit-wrap hidden" id="transcriptEditWrap">
           <div class="transcript-edit" id="transcriptEdit"
