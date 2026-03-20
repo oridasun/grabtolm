@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>GrabtoLM</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="GrabtoLM">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="apple-touch-icon" href="icons/icon-maskable-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Settings Modal -->
+  <div class="modal-overlay" id="settingsModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Google Drive Setup</h2>
+        <button class="icon-btn" id="closeSettings" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-description">
+          To save recordings to your Drive you need a Google OAuth 2.0 Client ID.
+          <a href="#" class="link" id="helpLink">How to get one →</a>
+        </p>
+        <label for="clientIdInput">Client ID</label>
+        <input type="text" id="clientIdInput"
+          placeholder="xxxxxxxxxx.apps.googleusercontent.com"
+          autocomplete="off" spellcheck="false">
+        <button class="btn-primary" id="saveSettings">Save &amp; Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help Modal -->
+  <div class="modal-overlay" id="helpModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Getting a Client ID</h2>
+        <button class="icon-btn" id="closeHelp" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body help-content">
+        <ol>
+          <li>Go to <strong>console.cloud.google.com</strong> and create or select a project.</li>
+          <li>Enable the <strong>Google Drive API</strong> in the API Library.</li>
+          <li>Go to <strong>APIs &amp; Services → Credentials</strong>.</li>
+          <li>Click <strong>Create Credentials → OAuth 2.0 Client ID</strong> (Web application).</li>
+          <li>Add your site URL to <strong>Authorized JavaScript origins</strong>.</li>
+          <li>Copy the Client ID and paste it in the Settings screen.</li>
+        </ol>
+        <button class="btn-primary" id="backToSettings">← Back to Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <!-- One-time mic permission tip (dismissed per device via localStorage) -->
+  <div class="mic-tip" id="micTip" hidden>
+    <div class="mic-tip-icon">🎙️</div>
+    <div class="mic-tip-body">
+      <strong>Permiso de micrófono</strong>
+      <span>Cuando Chrome lo solicite, elige <em>"Permitir mientras se visita el sitio"</em> para no tener que volver a aceptarlo en cada grabación.</span>
+    </div>
+    <button class="mic-tip-close" onclick="dismissMicTip()" aria-label="Cerrar">✕</button>
+  </div>
+
+  <div class="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <span class="app-name">GrabtoLM</span>
+        <span class="rec-badge" id="recBadge" hidden>
+          <span class="rec-dot"></span>REC
+        </span>
+      </div>
+      <div class="header-right">
+        <div class="dest-toggle" role="group" aria-label="Save destination">
+          <button class="dest-btn" id="btnLocal" data-dest="local">Local</button>
+          <button class="dest-btn" id="btnDrive" data-dest="drive">
+            <svg width="11" height="10" viewBox="0 0 87.3 78" aria-hidden="true">
+              <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#4285f4"/>
+              <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#4285f4"/>
+              <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 11.5z" fill="#4285f4"/>
+              <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#4285f4"/>
+              <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#4285f4"/>
+              <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#4285f4"/>
+            </svg>
+            Drive
+          </button>
+        </div>
+        <!-- Transcription toggle -->
+        <button class="icon-btn tx-toggle" id="txToggle" title="Toggle live transcription" aria-label="Toggle transcription" aria-pressed="false">
+          <!-- audio bars → arrow → text lines: "voice to text" -->
+          <svg width="17" height="13" viewBox="0 0 28 22" fill="currentColor" aria-hidden="true">
+            <rect x="1"  y="7"  width="2.5" height="8"  rx="1.25"/>
+            <rect x="5"  y="4"  width="2.5" height="14" rx="1.25"/>
+            <rect x="9"  y="7"  width="2.5" height="8"  rx="1.25"/>
+            <polygon points="13.5,9 16.5,11 13.5,13"/>
+            <rect x="18" y="6"   width="9"   height="2"  rx="1"/>
+            <rect x="18" y="10.5" width="7"  height="2"  rx="1"/>
+            <rect x="18" y="15"  width="9"   height="2"  rx="1"/>
+          </svg>
+        </button>
+        <!-- Language selector (shown when transcription is on) -->
+        <select class="lang-select hidden" id="langSelect" aria-label="Transcription language">
+          <option value="">Auto</option>
+          <option value="en-US">English (US)</option>
+          <option value="en-GB">English (UK)</option>
+          <option value="es-ES">Español</option>
+          <option value="es-MX">Español (MX)</option>
+          <option value="fr-FR">Français</option>
+          <option value="de-DE">Deutsch</option>
+          <option value="it-IT">Italiano</option>
+          <option value="pt-BR">Português (BR)</option>
+          <option value="pt-PT">Português (PT)</option>
+          <option value="zh-CN">中文 (简体)</option>
+          <option value="ja-JP">日本語</option>
+        </select>
+        <!-- PWA install button — shown only when browser fires beforeinstallprompt -->
+        <button class="icon-btn install-btn" id="installBtn" title="Install app" aria-label="Install app" hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="openSettings" title="Drive settings" aria-label="Drive settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Recorder area (waveform + timer + controls/review) -->
+    <div class="recorder-area">
+
+      <!-- Waveform -->
+      <div class="waveform-wrap" id="waveformWrap">
+        <canvas id="waveCanvas" aria-hidden="true"></canvas>
+        <p class="idle-hint" id="idleHint">Tap the button below to start</p>
+      </div>
+
+      <!-- Live transcript panel (shown during recording when transcription is on) -->
+      <div class="transcript-wrap hidden" id="transcriptWrap" aria-live="polite">
+        <div class="transcript-scroll" id="transcriptScroll"></div>
+      </div>
+
+      <!-- Timer -->
+      <div class="timer" id="timer" aria-live="off">00:00</div>
+
+      <!-- Controls -->
+      <div class="controls" id="controls">
+        <div id="ctrlIdle">
+          <button class="rec-btn" id="recordBtn" aria-label="Start recording">
+            <span class="rec-icon"></span>
+          </button>
+        </div>
+        <div id="ctrlRecording" class="hidden ctrl-row">
+          <button class="ctrl-btn" id="pauseBtn" aria-label="Pause">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+          </button>
+          <button class="stop-btn" id="stopBtn" aria-label="Stop">
+            <span class="stop-icon"></span>
+          </button>
+        </div>
+        <div id="ctrlPaused" class="hidden ctrl-row">
+          <button class="ctrl-btn" id="resumeBtn" aria-label="Resume">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          </button>
+          <button class="stop-btn" id="stopBtn2" aria-label="Stop">
+            <span class="stop-icon"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Review Panel (replaces controls on stop) -->
+      <div class="review" id="reviewPanel" hidden>
+        <div class="player-wrap">
+          <audio id="audioPlayer" controls></audio>
+        </div>
+        <p class="rec-info" id="recInfo"></p>
+        <!-- Transcript edit area (shown after recording if transcription was on) -->
+        <div class="transcript-edit-wrap hidden" id="transcriptEditWrap">
+          <div class="transcript-edit" id="transcriptEdit"
+               contenteditable="false"
+               spellcheck="true"
+               data-placeholder="No transcript captured."
+               role="textbox" aria-multiline="true" aria-label="Transcript"></div>
+        </div>
+        <!-- Transcript actions -->
+        <div class="action-row hidden" id="txActions">
+          <button class="action-btn tx-copy-btn" id="txCopyBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>
+            Copy
+          </button>
+          <button class="action-btn tx-dl-btn" id="txDownloadBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+            .txt
+          </button>
+          <button class="action-btn tx-drive-btn hidden" id="txDriveBtn">
+            <svg width="13" height="11" viewBox="0 0 87.3 78">
+              <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+              <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47"/>
+              <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 11.5z" fill="#ea4335"/>
+              <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+              <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+              <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+            </svg>
+            Drive
+          </button>
+        </div>
+        <!-- Local actions -->
+        <div class="action-row" id="localActions">
+          <button class="action-btn download-btn" id="downloadBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+            Download
+          </button>
+          <button class="action-btn share-btn" id="shareBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92 1.61 0 2.92-1.31 2.92-2.92s-1.31-2.92-2.92-2.92z"/></svg>
+            Share
+          </button>
+        </div>
+        <!-- Drive actions -->
+        <div class="action-row hidden" id="driveActions">
+          <button class="action-btn drive-btn" id="uploadBtn">
+            <svg width="14" height="12" viewBox="0 0 87.3 78">
+              <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+              <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47"/>
+              <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 11.5z" fill="#ea4335"/>
+              <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+              <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
+              <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
+            </svg>
+            Save to Drive
+          </button>
+        </div>
+        <div class="drive-ok hidden" id="driveOk">
+          <span class="ok-check">✓</span>
+          <span>Saved to Drive</span>
+          <a href="https://notebooklm.google.com" target="_blank" rel="noopener noreferrer" class="nlm-link">Open NotebookLM →</a>
+        </div>
+        <button class="new-btn" id="newBtn">+ New Recording</button>
+      </div>
+    </div><!-- .recorder-area -->
+
+    <!-- History -->
+    <section class="history" id="historySection">
+      <div class="history-header">
+        <span class="history-title">Recordings</span>
+        <span class="history-count badge" id="historyCount" hidden></span>
+        <button class="history-clear" id="clearAllBtn" hidden>Clear all</button>
+      </div>
+      <p class="history-empty" id="historyEmpty">No recordings yet — they appear here automatically.</p>
+      <div class="history-list" id="historyList"></div>
+    </section>
+
+  </div><!-- .app -->
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="app.js"></script>
+</body>
+</html>
