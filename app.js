@@ -18,13 +18,18 @@ let txInterimText = '';
 let txSecs        = 0;   // seconds elapsed at moment of each final result (for timestamps)
 const txSupported = !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
+// Device detection
+const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
 // PCM capture (for WAV encoding)
 let stream         = null;
 let audioCtx       = null;
 let analyser       = null;
-let scriptProc     = null;
-let capturing      = false;   // true only while actively recording (not paused)
-let pcmChunks      = [];      // Float32Array chunks of raw PCM
+let scriptProc     = null;      // desktop only
+let mobileRecorder = null;      // mobile only — MediaRecorder avoids mic-lock conflict with SpeechRecognition
+let mobileChunks   = [];        // mobile only — raw MediaRecorder blobs
+let capturing      = false;     // true only while actively recording (not paused)
+let pcmChunks      = [];        // desktop only — Float32Array chunks of raw PCM
 let wavSampleRate  = 44100;
 
 // Output
@@ -446,25 +451,52 @@ async function startRec() {
 
   const src = audioCtx.createMediaStreamSource(stream);
 
-  // Analyser for waveform
+  // Analyser for waveform (both desktop and mobile)
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
   analyser.smoothingTimeConstant = 0.82;
   src.connect(analyser);
 
-  // ScriptProcessorNode for PCM capture
-  scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
-  const muted = audioCtx.createGain(); muted.gain.value = 0;
-  src.connect(scriptProc);
-  scriptProc.connect(muted);
-  muted.connect(audioCtx.destination);
-
-  pcmChunks = [];
-  capturing = true;
-  scriptProc.onaudioprocess = e => {
-    if (!capturing) return;
-    pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-  };
+  if (isMobile) {
+    // ── Mobile: MediaRecorder ──────────────────────────────────────────────
+    // ScriptProcessorNode holds an exclusive mic lock on Android that prevents
+    // SpeechRecognition from running simultaneously. MediaRecorder shares the
+    // mic correctly at the OS level.
+    mobileChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+      ? 'audio/webm;codecs=opus' : '';
+    mobileRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
+    mobileRecorder.ondataavailable = e => { if (e.data.size > 0) mobileChunks.push(e.data); };
+    mobileRecorder.onstop = async () => {
+      const blob = new Blob(mobileChunks, { type: mobileRecorder.mimeType });
+      try {
+        const arrayBuf = await blob.arrayBuffer();
+        const tempCtx  = new (window.AudioContext || window.webkitAudioContext)();
+        const audioBuf = await tempCtx.decodeAudioData(arrayBuf);
+        await tempCtx.close();
+        wavSampleRate = audioBuf.sampleRate;
+        wavBlob = encodePCM([audioBuf.getChannelData(0)], wavSampleRate);
+      } catch (err) {
+        console.warn('Mobile audio decode failed:', err);
+        wavBlob = new Blob([], { type: 'audio/wav' });
+      }
+      buildWAV();
+    };
+    mobileRecorder.start(500); // collect a chunk every 500 ms
+  } else {
+    // ── Desktop: ScriptProcessorNode (direct PCM, no post-processing) ──────
+    scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
+    const muted = audioCtx.createGain(); muted.gain.value = 0;
+    src.connect(scriptProc);
+    scriptProc.connect(muted);
+    muted.connect(audioCtx.destination);
+    pcmChunks = [];
+    capturing = true;
+    scriptProc.onaudioprocess = e => {
+      if (!capturing) return;
+      pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+  }
 
   phase      = 'recording';
   startTs    = Date.now();
@@ -494,6 +526,7 @@ function pauseRec() {
   stopTimer();
   stopViz();
   setUI('paused');
+  if (isMobile && mobileRecorder && mobileRecorder.state === 'recording') mobileRecorder.pause();
   // Leave recognition running during pause — results are ignored while phase !== 'recording'
   if (txEnabled) {
     txInterimText = '';
@@ -509,6 +542,7 @@ function resumeRec() {
   startTimer();
   startViz();
   setUI('recording');
+  if (isMobile && mobileRecorder && mobileRecorder.state === 'paused') mobileRecorder.resume();
   // Recognition kept running during pause — no restart needed
 }
 
@@ -528,13 +562,22 @@ function stopRec() {
   // Keep recognition instance alive — reusing same object avoids Chrome re-prompting for mic.
   // It will stop naturally (onend fires) but won't restart while phase !== 'recording'.
 
+  phase = 'stopped';
+  setUI('stopped');
+
+  if (isMobile && mobileRecorder) {
+    // mobileRecorder.onstop decodes the audio and calls buildWAV() asynchronously
+    if (mobileRecorder.state === 'paused') mobileRecorder.resume(); // ensure all data is flushed
+    mobileRecorder.stop();
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    return; // buildWAV() will be called from mobileRecorder.onstop
+  }
+
+  // Desktop path
   // Do NOT stop stream tracks — keep mic permission alive for next recording.
   // Tracks are released on page unload (see beforeunload handler in PWA section).
   if (scriptProc) { scriptProc.disconnect(); scriptProc = null; }
   if (audioCtx)   { audioCtx.close(); audioCtx = null; }
-
-  phase = 'stopped';
-  setUI('stopped');
   buildWAV();
 }
 
@@ -542,8 +585,11 @@ async function buildWAV() {
   // Encode on next tick so UI updates first
   await new Promise(r => setTimeout(r, 0));
 
-  wavBlob = encodePCM(pcmChunks, wavSampleRate);
+  // Mobile sets wavBlob before calling buildWAV (via mobileRecorder.onstop decode)
+  if (!wavBlob) wavBlob = encodePCM(pcmChunks, wavSampleRate);
   pcmChunks = [];
+  mobileChunks = [];
+  mobileRecorder = null;
   wavUrl = URL.createObjectURL(wavBlob);
 
   D.audioPlayer.src = wavUrl;
@@ -1078,7 +1124,13 @@ function dismissMicTip() {
 // ── Reset ─────────────────────────────────────────────────────────────────────
 function resetAll() {
   if (wavUrl) { URL.revokeObjectURL(wavUrl); wavUrl = null; }
-  wavBlob = null; pcmChunks = [];
+  wavBlob = null; pcmChunks = []; mobileChunks = [];
+  if (mobileRecorder && mobileRecorder.state !== 'inactive') {
+    mobileRecorder.ondataavailable = null; // prevent onstop from calling buildWAV after reset
+    mobileRecorder.onstop = null;
+    mobileRecorder.stop();
+  }
+  mobileRecorder = null;
   txFinalText = ''; txInterimText = '';
   D.transcriptEdit.textContent = '';
   D.transcriptEdit.contentEditable = 'false';
