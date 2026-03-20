@@ -280,6 +280,12 @@ function txCreateRecognition() {
     renderTranscriptPanel();
   };
 
+  recognition.onstart = () => {
+    if (phase === 'recording' && !txFinalText && !txInterimText) {
+      D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Listening…</span>';
+    }
+  };
+
   recognition.onend = () => {
     if (phase === 'recording' && txEnabled) {
       setTimeout(() => {
@@ -289,17 +295,28 @@ function txCreateRecognition() {
   };
 
   recognition.onerror = e => {
+    // Show error visibly — especially useful on mobile where console is not accessible
+    const MSGS = {
+      'not-allowed':         'Mic not allowed — check browser permissions',
+      'service-not-allowed': 'Speech service blocked — try a different browser',
+      'audio-capture':       'Mic busy — retrying…',
+      'network':             'Network error — check connection',
+    };
+    const msg = MSGS[e.error];
+    if (msg && phase === 'recording') {
+      D.transcriptScroll.innerHTML = `<span class="tx-placeholder" style="color:#f87171">⚠ ${msg}</span>`;
+    }
+
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       txEnabled = false;
       localStorage.setItem('txEnabled', 'false');
       applyTxToggleUI();
-    } else if (e.error === 'audio-capture') {
-      // Mic temporarily busy (common on Android) — retry after a short wait
+    } else if (e.error === 'audio-capture' || e.error === 'network') {
       setTimeout(() => {
         if (phase === 'recording' && txEnabled) txStartRecognition();
-      }, 600);
+      }, 800);
     }
-    // 'no-speech', 'network', 'aborted' — onend fires and restarts if needed
+    // 'no-speech', 'aborted' — onend fires and restarts if needed
   };
 }
 
@@ -434,34 +451,46 @@ function encodePCM(chunks, sampleRate) {
 
 // ── Recording ─────────────────────────────────────────────────────────────────
 async function startRec() {
-  // Reuse existing stream if still active — avoids repeated permission dialogs on file://
+  // ── MOBILE: SpeechRecognition first, getUserMedia second ──────────────────
+  // On Android Chrome, getUserMedia + AudioContext can prevent SpeechRecognition
+  // from accessing the mic. Starting recognition first gives it priority.
+  if (isMobile) {
+    phase = 'recording'; startTs = Date.now(); totalPaused = 0;
+    setUI('recording'); startTimer();
+
+    if (txEnabled) {
+      txFinalText = ''; txInterimText = '';
+      D.transcriptWrap.classList.remove('hidden');
+      D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Starting…</span>';
+      txStartRecognition();
+      await new Promise(r => setTimeout(r, 500)); // let recognition get mic first
+    }
+  }
+
+  // Get microphone stream (reuse if still alive to avoid repeated permission prompts)
   const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
   if (!tracksAlive) {
     try {
-      // Use default audio constraints — explicit echoCancellation:false can block
-      // SpeechRecognition from accessing the mic simultaneously on Android Chrome.
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) { return handleMicError(err); }
+    } catch (err) {
+      if (isMobile) { phase = 'idle'; setUI('idle'); stopTimer(); }
+      return handleMicError(err);
+    }
   }
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  // Mobile browsers start AudioContext suspended — must resume after user gesture.
   if (audioCtx.state === 'suspended') await audioCtx.resume();
   wavSampleRate = audioCtx.sampleRate;
 
   const src = audioCtx.createMediaStreamSource(stream);
 
-  // Analyser for waveform (both desktop and mobile)
   analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
   analyser.smoothingTimeConstant = 0.82;
   src.connect(analyser);
 
   if (isMobile) {
-    // ── Mobile: MediaRecorder ──────────────────────────────────────────────
-    // ScriptProcessorNode holds an exclusive mic lock on Android that prevents
-    // SpeechRecognition from running simultaneously. MediaRecorder shares the
-    // mic correctly at the OS level.
+    // MediaRecorder for audio capture — shares mic with SpeechRecognition on Android
     mobileChunks = [];
     const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
       ? 'audio/webm;codecs=opus' : '';
@@ -482,39 +511,32 @@ async function startRec() {
       }
       buildWAV();
     };
-    mobileRecorder.start(500); // collect a chunk every 500 ms
-  } else {
-    // ── Desktop: ScriptProcessorNode (direct PCM, no post-processing) ──────
-    scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
-    const muted = audioCtx.createGain(); muted.gain.value = 0;
-    src.connect(scriptProc);
-    scriptProc.connect(muted);
-    muted.connect(audioCtx.destination);
-    pcmChunks = [];
-    capturing = true;
-    scriptProc.onaudioprocess = e => {
-      if (!capturing) return;
-      pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-    };
+    mobileRecorder.start(500);
+    startViz();
+    return; // phase/timer/transcription already set above
   }
 
-  phase      = 'recording';
-  startTs    = Date.now();
-  totalPaused = 0;
+  // ── DESKTOP: ScriptProcessorNode ──────────────────────────────────────────
+  scriptProc = audioCtx.createScriptProcessor(4096, 1, 1);
+  const muted = audioCtx.createGain(); muted.gain.value = 0;
+  src.connect(scriptProc);
+  scriptProc.connect(muted);
+  muted.connect(audioCtx.destination);
+  pcmChunks = [];
+  capturing = true;
+  scriptProc.onaudioprocess = e => {
+    if (!capturing) return;
+    pcmChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
 
-  setUI('recording');
-  startTimer();
-  startViz();
+  phase = 'recording'; startTs = Date.now(); totalPaused = 0;
+  setUI('recording'); startTimer(); startViz();
 
-  // Start transcription if enabled.
-  // On mobile, delay slightly so the AudioContext stream settles before
-  // SpeechRecognition also requests the microphone.
   if (txEnabled) {
     txFinalText = ''; txInterimText = '';
     D.transcriptWrap.classList.remove('hidden');
     D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Listening…</span>';
-    const txDelay = /Mobi|Android/i.test(navigator.userAgent) ? 400 : 0;
-    setTimeout(txStartRecognition, txDelay);
+    txStartRecognition();
   }
 }
 
