@@ -288,6 +288,11 @@ function txCreateRecognition() {
       txEnabled = false;
       localStorage.setItem('txEnabled', 'false');
       applyTxToggleUI();
+    } else if (e.error === 'audio-capture') {
+      // Mic temporarily busy (common on Android) — retry after a short wait
+      setTimeout(() => {
+        if (phase === 'recording' && txEnabled) txStartRecognition();
+      }, 600);
     }
     // 'no-speech', 'network', 'aborted' — onend fires and restarts if needed
   };
@@ -428,13 +433,15 @@ async function startRec() {
   const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
   if (!tracksAlive) {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false }
-      });
+      // Use default audio constraints — explicit echoCancellation:false can block
+      // SpeechRecognition from accessing the mic simultaneously on Android Chrome.
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) { return handleMicError(err); }
   }
 
-  audioCtx     = new (window.AudioContext || window.webkitAudioContext)();
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // Mobile browsers start AudioContext suspended — must resume after user gesture.
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
   wavSampleRate = audioCtx.sampleRate;
 
   const src = audioCtx.createMediaStreamSource(stream);
@@ -467,12 +474,15 @@ async function startRec() {
   startTimer();
   startViz();
 
-  // Start transcription if enabled
+  // Start transcription if enabled.
+  // On mobile, delay slightly so the AudioContext stream settles before
+  // SpeechRecognition also requests the microphone.
   if (txEnabled) {
     txFinalText = ''; txInterimText = '';
     D.transcriptWrap.classList.remove('hidden');
     D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Listening…</span>';
-    txStartRecognition();
+    const txDelay = /Mobi|Android/i.test(navigator.userAgent) ? 400 : 0;
+    setTimeout(txStartRecognition, txDelay);
   }
 }
 
