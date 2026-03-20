@@ -256,6 +256,13 @@ function applyTxToggleUI() {
   document.querySelector('.app').classList.toggle('tx-active', txEnabled);
 }
 
+// Shows a small diagnostic badge in the transcript area (mobile only)
+function txDbg(msg) {
+  if (!isMobile) return;
+  const el = document.getElementById('txDbgBadge');
+  if (el) { el.textContent = '⚙ ' + msg; el.hidden = false; }
+}
+
 function txCreateRecognition() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   recognition = new SR();
@@ -281,12 +288,14 @@ function txCreateRecognition() {
   };
 
   recognition.onstart = () => {
+    txDbg('onstart ✓');
     if (phase === 'recording' && !txFinalText && !txInterimText) {
       D.transcriptScroll.innerHTML = '<span class="tx-placeholder">Listening…</span>';
     }
   };
 
   recognition.onend = () => {
+    txDbg('onend — restarting…');
     if (phase === 'recording' && txEnabled) {
       setTimeout(() => {
         if (phase === 'recording' && txEnabled) txStartRecognition();
@@ -295,15 +304,15 @@ function txCreateRecognition() {
   };
 
   recognition.onerror = e => {
-    // Show error visibly — especially useful on mobile where console is not accessible
+    txDbg('onerror: ' + e.error);
     const MSGS = {
       'not-allowed':         'Mic not allowed — check browser permissions',
       'service-not-allowed': 'Speech service blocked — try a different browser',
       'audio-capture':       'Mic busy — retrying…',
       'network':             'Network error — check connection',
     };
-    const msg = MSGS[e.error];
-    if (msg && phase === 'recording') {
+    const msg = MSGS[e.error] || ('Error: ' + e.error);
+    if (phase === 'recording') {
       D.transcriptScroll.innerHTML = `<span class="tx-placeholder" style="color:#f87171">⚠ ${msg}</span>`;
     }
 
@@ -316,7 +325,6 @@ function txCreateRecognition() {
         if (phase === 'recording' && txEnabled) txStartRecognition();
       }, 800);
     }
-    // 'no-speech', 'aborted' — onend fires and restarts if needed
   };
 }
 
