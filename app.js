@@ -295,17 +295,38 @@ function ensureWhisperWorker() {
   whisperWorker.onerror = (e) => finishWhisper('', e.message || 'Worker error');
 }
 
+let whisperTimer  = null;   // elapsed-seconds ticker
+let whisperTimeout = null;  // hard timeout
+
 function startWhisperTranscription(wavBuffer) {
   ensureWhisperWorker();
   D.whisperProgress.classList.remove('hidden');
-  D.whisperStatusText.textContent = 'Preparing… (first run may take 1–2 min)';
+  D.whisperStatusText.textContent = 'Preparing…';
   D.whisperBarWrap.classList.add('hidden');
   D.whisperBarFill.style.width = '0%';
+
+  // Elapsed-time ticker so user sees progress is happening
+  let elapsed = 0;
+  clearInterval(whisperTimer);
+  whisperTimer = setInterval(() => {
+    elapsed++;
+    const base = D.whisperStatusText.textContent.replace(/ \(\d+s\)$/, '');
+    D.whisperStatusText.textContent = `${base} (${elapsed}s)`;
+  }, 1000);
+
+  // Hard timeout — 3 minutes
+  clearTimeout(whisperTimeout);
+  whisperTimeout = setTimeout(() => {
+    finishWhisper('', 'Timeout: inference took too long on this device.');
+  }, 180_000);
+
   // Transfer ownership of the ArrayBuffer to the worker (zero-copy)
   whisperWorker.postMessage({ type: 'transcribe', wavBuffer, lang: txLang }, [wavBuffer]);
 }
 
 async function finishWhisper(text, errorMsg) {
+  clearInterval(whisperTimer);
+  clearTimeout(whisperTimeout);
   D.whisperProgress.classList.add('hidden');
   if (errorMsg) {
     console.warn('Whisper error:', errorMsg);
@@ -579,7 +600,14 @@ async function startRec() {
     const tracksAlive = stream && stream.getTracks().every(t => t.readyState === 'live');
     if (!tracksAlive) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,  // boosts quiet voices automatically
+          }
+        });
       } catch (err) {
         phase = 'idle'; setUI('idle'); stopTimer(); stopViz();
         return handleMicError(err);

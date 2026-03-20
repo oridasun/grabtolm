@@ -68,18 +68,39 @@ self.onmessage = async ({ data }) => {
     self.postMessage({ type: 'status', text: 'Loading model…' });
     const pipe = await getTranscriber();
 
-    self.postMessage({ type: 'status', text: 'Analyzing audio… (please wait)' });
-
     const { float32, sampleRate } = parsePCMWav(data.wavBuffer);
+
+    // Validate audio — check amplitude before wasting inference time
+    const numSamples = float32.length;
+    if (numSamples < 1600) { // less than 0.1s at 16kHz
+      self.postMessage({ type: 'done', text: '' });
+      return;
+    }
+    let maxAmp = 0;
+    for (let i = 0; i < numSamples; i++) {
+      const a = Math.abs(float32[i]);
+      if (a > maxAmp) maxAmp = a;
+    }
+    self.postMessage({
+      type: 'status',
+      text: `Analyzing audio… ${numSamples} samples @ ${sampleRate}Hz | level: ${maxAmp.toFixed(3)}`
+    });
+
+    if (maxAmp < 0.005) {
+      // Audio is nearly silent — mic may not have captured properly
+      self.postMessage({ type: 'error', message: `Audio level too low (${maxAmp.toFixed(4)}). Check mic permissions and speak louder.` });
+      return;
+    }
+
     const whisperLang = LANG_MAP[data.lang] || null;
 
     const result = await pipe(
       { data: float32, sampling_rate: sampleRate },
       {
-        language:       whisperLang,
-        task:           'transcribe',
-        chunk_length_s: 30,
-        stride_length_s: 5,
+        language:          whisperLang,
+        task:              'transcribe',
+        chunk_length_s:    30,
+        stride_length_s:   5,
         return_timestamps: true,
       }
     );
