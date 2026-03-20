@@ -68,7 +68,7 @@ self.onmessage = async ({ data }) => {
     self.postMessage({ type: 'status', text: 'Loading model…' });
     const pipe = await getTranscriber();
 
-    self.postMessage({ type: 'status', text: 'Analyzing audio…' });
+    self.postMessage({ type: 'status', text: 'Analyzing audio… (please wait)' });
 
     const { float32, sampleRate } = parsePCMWav(data.wavBuffer);
     const whisperLang = LANG_MAP[data.lang] || null;

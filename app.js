@@ -298,7 +298,7 @@ function ensureWhisperWorker() {
 function startWhisperTranscription(wavBuffer) {
   ensureWhisperWorker();
   D.whisperProgress.classList.remove('hidden');
-  D.whisperStatusText.textContent = 'Preparing…';
+  D.whisperStatusText.textContent = 'Preparing… (first run may take 1–2 min)';
   D.whisperBarWrap.classList.add('hidden');
   D.whisperBarFill.style.width = '0%';
   // Transfer ownership of the ArrayBuffer to the worker (zero-copy)
@@ -307,8 +307,22 @@ function startWhisperTranscription(wavBuffer) {
 
 async function finishWhisper(text, errorMsg) {
   D.whisperProgress.classList.add('hidden');
-  if (errorMsg) { console.warn('Whisper error:', errorMsg); return; }
-  if (!text || !text.trim()) return;
+  if (errorMsg) {
+    console.warn('Whisper error:', errorMsg);
+    // Show error visibly so the user knows what happened
+    D.whisperStatusText.textContent = '⚠ ' + errorMsg;
+    D.whisperProgress.classList.remove('hidden');
+    D.whisperBarWrap.classList.add('hidden');
+    setTimeout(() => D.whisperProgress.classList.add('hidden'), 6000);
+    return;
+  }
+  if (!text || !text.trim()) {
+    // Empty result — show brief notice
+    D.whisperStatusText.textContent = '⚠ No speech detected. Try speaking closer to the mic.';
+    D.whisperProgress.classList.remove('hidden');
+    setTimeout(() => D.whisperProgress.classList.add('hidden'), 5000);
+    return;
+  }
 
   // Populate transcript edit area
   D.transcriptEdit.textContent = text.trim();

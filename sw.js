@@ -1,4 +1,4 @@
-const CACHE = 'grabtolm-v12';
+const CACHE = 'grabtolm-v13';
 
 // Detect base path dynamically — works on localhost (/sw.js) and GitHub Pages (/grabtolm/sw.js)
 const BASE = new URL('./', self.location.href).pathname;
