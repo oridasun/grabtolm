@@ -763,3 +763,15 @@ input[type="text"]::placeholder { color: var(--text-3); }
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 2px; }
+
+/* ── Groq setup modal ────────────────────────────────────────────────────── */
+.groq-steps {
+  margin: 8px 0 12px 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.7;
+}
+.groq-steps li { margin-bottom: 4px; }
+.groq-settings-btn { color: var(--text-2); }
+.groq-settings-btn:hover { color: var(--text); }

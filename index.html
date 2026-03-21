@@ -15,6 +15,39 @@
 <body>
 
 
+  <!-- Groq Setup Modal (mobile only) -->
+  <div class="modal-overlay" id="groqModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Configurar transcripción IA</h2>
+        <button class="icon-btn" id="closeGroqModal" aria-label="Cerrar">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-description">
+          GrabtoLM usa <strong>Groq Whisper</strong> para transcribir tus grabaciones en el móvil.
+          Es <strong>gratuito</strong> — solo necesitas crear una cuenta y obtener tu clave API personal.
+        </p>
+        <p class="modal-description">
+          Tu clave se guarda solo en este dispositivo y nunca se comparte.
+        </p>
+        <ol class="groq-steps">
+          <li>Ve a <a href="https://console.groq.com" target="_blank" rel="noopener" class="link">console.groq.com</a> y crea una cuenta gratuita</li>
+          <li>En el menú izquierdo, haz clic en <strong>API Keys</strong></li>
+          <li>Haz clic en <strong>Create API Key</strong></li>
+          <li>Copia la clave y pégala aquí:</li>
+        </ol>
+        <label for="groqApiKeyInput">Groq API Key</label>
+        <input type="password" id="groqApiKeyInput"
+          placeholder="gsk_xxxxxxxxxxxxxxxxxxxx"
+          autocomplete="off" spellcheck="false">
+        <p class="modal-description" style="margin-top:8px;font-size:12px;opacity:.6">
+          Plan gratuito: ~8 horas de audio al día · Modelo: whisper-large-v3
+        </p>
+        <button class="btn-primary" id="saveGroqKey">Guardar</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Main App -->
   <!-- One-time mic permission tip (dismissed per device via localStorage) -->
   <div class="mic-tip" id="micTip" hidden>
@@ -65,6 +98,12 @@
           <option value="zh-CN">中文 (简体)</option>
           <option value="ja-JP">日本語</option>
         </select>
+        <!-- Groq settings button — mobile only -->
+        <button class="icon-btn groq-settings-btn" id="openGroqModal" title="Configurar Groq API" aria-label="Configurar Groq API">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
+          </svg>
+        </button>
         <!-- PWA install button — shown only when browser fires beforeinstallprompt -->
         <button class="icon-btn install-btn" id="installBtn" title="Install app" aria-label="Install app" hidden>
           <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

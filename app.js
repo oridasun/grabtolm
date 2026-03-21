@@ -69,12 +69,15 @@ const D = {
   audioPlayer: $('audioPlayer'),
   recInfo:     $('recInfo'),
   localActions:$('localActions'),
-  driveActions:$('driveActions'),
   downloadBtn: $('downloadBtn'),
   shareBtn:    $('shareBtn'),
-  uploadBtn:   $('uploadBtn'),
-  driveOk:     $('driveOk'),
   newBtn:      $('newBtn'),
+  // Groq setup modal (mobile)
+  openGroqModal: $('openGroqModal'),
+  groqModal:     $('groqModal'),
+  closeGroqModal:$('closeGroqModal'),
+  groqApiKeyInput:$('groqApiKeyInput'),
+  saveGroqKey:   $('saveGroqKey'),
   historyCount:$('historyCount'),
   clearAllBtn: $('clearAllBtn'),
   historyEmpty:$('historyEmpty'),
@@ -137,6 +140,19 @@ function setupCanvas() {
 // ── Events ────────────────────────────────────────────────────────────────────
 function bindEvents() {
   document.getElementById('installBtn')?.addEventListener('click', doInstall);
+
+  // Groq setup modal — only shown on mobile
+  if (!isMobile) {
+    D.openGroqModal.hidden = true;
+  } else {
+    D.openGroqModal.addEventListener('click', openGroqSetup);
+    D.closeGroqModal.addEventListener('click', () => { D.groqModal.hidden = true; });
+    D.saveGroqKey.addEventListener('click', saveGroqApiKey);
+    D.groqModal.addEventListener('click', e => { if (e.target === D.groqModal) D.groqModal.hidden = true; });
+    // Load saved key into input
+    const saved = localStorage.getItem('groqApiKey') || '';
+    if (saved) D.groqApiKeyInput.value = saved;
+  }
 
   D.recordBtn.addEventListener('click', startRec);
   D.pauseBtn.addEventListener('click',  pauseRec);
@@ -213,19 +229,42 @@ const GROQ_LANG = {
   'zh':'zh','ja':'ja',
 };
 
-const DEFAULT_ENDPOINT = 'https://grabtolm-tx.patient-surf-8d06.workers.dev';
-const GROQ_CHUNK_S     = 240;   // 4 minutes per chunk — well under the 25 MB Groq limit
-const GROQ_SAMPLE_HZ   = 16000; // 16 kHz — sufficient for speech, ~3x smaller than 44.1 kHz
+const GROQ_API_URL  = 'https://api.groq.com/openai/v1/audio/transcriptions';
+const GROQ_CHUNK_S  = 240;   // 4 minutes per chunk — well under the 25 MB Groq limit
+const GROQ_SAMPLE_HZ = 16000; // 16 kHz — sufficient for speech, ~3x smaller than 44.1 kHz
+
+// ── Groq API key management ───────────────────────────────────────────────────
+function openGroqSetup() {
+  const saved = localStorage.getItem('groqApiKey') || '';
+  D.groqApiKeyInput.value = saved;
+  D.groqModal.hidden = false;
+}
+
+function saveGroqApiKey() {
+  const key = D.groqApiKeyInput.value.trim();
+  if (key) {
+    localStorage.setItem('groqApiKey', key);
+    D.groqModal.hidden = true;
+  } else {
+    D.groqApiKeyInput.focus();
+  }
+}
 
 // Accepts any audio Blob (WAV or WebM). Splits into 4-min chunks at 16 kHz and
-// sends each to Groq sequentially, combining timestamped results.
+// sends each to Groq directly, combining timestamped results.
 async function startGroqTranscription(audioBlob) {
-  const endpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
   D.whisperProgress.classList.remove('hidden');
   D.whisperBarWrap.classList.add('hidden');
 
+  // If no API key, prompt user to configure it
+  if (!apiKey) {
+    D.whisperProgress.classList.add('hidden');
+    openGroqSetup();
+    return;
+  }
+
   try {
-    D.whisperStatusText.textContent = 'Preparing audio…';
+    D.whisperStatusText.textContent = 'Preparando audio…';
 
     // Decode blob (WAV or WebM) to raw AudioBuffer
     const arrayBuf  = await audioBlob.arrayBuffer();
@@ -244,8 +283,8 @@ async function startGroqTranscription(audioBlob) {
       const chunkSecs = endS - startS;
 
       D.whisperStatusText.textContent = numChunks > 1
-        ? `Transcribing part ${i + 1} of ${numChunks}…`
-        : 'Transcribing…';
+        ? `Transcribiendo parte ${i + 1} de ${numChunks}…`
+        : 'Transcribiendo…';
 
       // Resample chunk to 16 kHz via OfflineAudioContext
       const frames = Math.ceil(chunkSecs * GROQ_SAMPLE_HZ);
@@ -257,14 +296,27 @@ async function startGroqTranscription(audioBlob) {
       const resampled = await offCtx.startRendering();
       const chunkWav  = encodePCM([resampled.getChannelData(0)], GROQ_SAMPLE_HZ);
 
-      // POST chunk to Groq via Cloudflare Worker
+      // POST chunk directly to Groq API
       const form = new FormData();
       form.append('file', chunkWav, 'recording.wav');
+      form.append('model', 'whisper-large-v3');
+      form.append('response_format', 'verbose_json');
+      form.append('timestamp_granularities[]', 'segment');
       if (lang) form.append('language', lang);
 
-      const res = await fetch(endpoint, { method: 'POST', body: form });
+      const res = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+      });
+
       if (!res.ok) {
         const errText = await res.text();
+        // If 401, the key is invalid — prompt user to update it
+        if (res.status === 401) {
+          localStorage.removeItem('groqApiKey');
+          throw new Error('API key inválida. Ve a ⚙ Configuración y actualiza tu clave de Groq.');
+        }
         throw new Error(`Error ${res.status}: ${errText.slice(0, 200)}`);
       }
 
