@@ -289,8 +289,7 @@ async function startGroqTranscription(wavBlob) {
   D.whisperBarWrap.classList.add('hidden');
 
   if (!endpoint) {
-    D.whisperStatusText.textContent = '⚙️ Configure Transcription Endpoint in Settings to enable transcription.';
-    setTimeout(() => D.whisperProgress.classList.add('hidden'), 8000);
+    await finishTranscription('', '⚙️ No Transcription Endpoint configured. Go to Settings and paste your Worker URL.');
     return;
   }
 
@@ -306,7 +305,7 @@ async function startGroqTranscription(wavBlob) {
 
     if (!res.ok) {
       const errText = await res.text();
-      throw new Error(`API ${res.status}: ${errText.slice(0, 120)}`);
+      throw new Error(`Error ${res.status}: ${errText.slice(0, 200)}`);
     }
 
     const data = await res.json();
@@ -326,6 +325,7 @@ async function startGroqTranscription(wavBlob) {
     await finishTranscription(text, null);
 
   } catch (err) {
+    console.error('[Groq] transcription error:', err);
     await finishTranscription('', err.message);
   }
 }
@@ -334,16 +334,19 @@ async function finishTranscription(text, errorMsg) {
   D.whisperProgress.classList.add('hidden');
 
   if (errorMsg) {
-    D.whisperStatusText.textContent = '⚠ ' + errorMsg;
-    D.whisperProgress.classList.remove('hidden');
-    D.whisperBarWrap.classList.add('hidden');
-    setTimeout(() => D.whisperProgress.classList.add('hidden'), 8000);
+    // Show error persistently in the transcript area so it doesn't disappear
+    D.transcriptEdit.textContent = '⚠ ' + errorMsg;
+    D.transcriptEdit.contentEditable = 'false';
+    D.transcriptEditWrap.classList.remove('hidden');
+    D.txActions.classList.add('hidden');
     return;
   }
   if (!text || !text.trim()) {
-    D.whisperStatusText.textContent = '⚠ No speech detected in the recording.';
-    D.whisperProgress.classList.remove('hidden');
-    setTimeout(() => D.whisperProgress.classList.add('hidden'), 5000);
+    // Show "no speech" persistently in the transcript area
+    D.transcriptEdit.textContent = '⚠ No speech detected. Check that the microphone captured audio and the recording is not silent.';
+    D.transcriptEdit.contentEditable = 'false';
+    D.transcriptEditWrap.classList.remove('hidden');
+    D.txActions.classList.add('hidden');
     return;
   }
 
