@@ -750,7 +750,7 @@ function stopRec() {
   // Tracks are released on page unload (see beforeunload handler in PWA section).
   if (scriptProc) { scriptProc.disconnect(); scriptProc = null; }
   if (audioCtx)   { audioCtx.close(); audioCtx = null; }
-  buildWAV();
+  buildWAV().then(() => { if (txEnabled) startGroqTranscription(wavBlob); });
 }
 
 async function buildWAV() {
@@ -785,22 +785,9 @@ async function buildWAV() {
   D.transcriptWrap.classList.add('hidden');
   D.whisperProgress.classList.add('hidden'); // reset from any previous run
 
-  if (isMobile && txEnabled) {
-    // Whisper will populate this after processing — keep edit area hidden for now
-    D.transcriptEditWrap.classList.add('hidden');
-    D.txActions.classList.add('hidden');
-    // whisperProgress shown by startWhisperTranscription() called after buildWAV()
-  } else if (!isMobile && txEnabled && txFinalText.trim()) {
-    // Desktop: SpeechRecognition transcript available immediately
-    D.transcriptEditWrap.classList.remove('hidden');
-    D.txActions.classList.remove('hidden');
-    D.transcriptEdit.textContent = txFinalText.trim();
-    D.transcriptEdit.contentEditable = 'true';
-    D.txDriveBtn.classList.toggle('hidden', destination !== 'drive');
-  } else {
-    D.transcriptEditWrap.classList.add('hidden');
-    D.txActions.classList.add('hidden');
-  }
+  // Groq transcription runs after buildWAV() for both mobile and desktop
+  D.transcriptEditWrap.classList.add('hidden');
+  D.txActions.classList.add('hidden');
 
   D.reviewPanel.hidden = false;
   drawBars(false);
