@@ -1,13 +1,7 @@
 'use strict';
 
-// ── Constants ────────────────────────────────────────────────────────────────
-const FOLDER_NAME = 'NotebookLM Recordings';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-
 // ── State ────────────────────────────────────────────────────────────────────
-let phase       = 'idle'; // idle | recording | paused | stopped
-let destination = localStorage.getItem('dest') || 'local';
-let clientId    = localStorage.getItem('driveClientId') || '';
+let phase = 'idle'; // idle | recording | paused | stopped
 
 // Transcription state
 let txEnabled     = localStorage.getItem('txEnabled') !== 'false'; // on by default
@@ -52,11 +46,6 @@ let pauseTs     = 0;
 let finalSecs   = 0;
 let timerTick   = null;
 
-// Google Drive OAuth
-let tokenClient  = null;
-let accessToken  = null;
-let pendingUpload = false;
-
 // IndexedDB
 let db = null;
 
@@ -64,18 +53,6 @@ let db = null;
 const $ = id => document.getElementById(id);
 const D = {
   recBadge:    $('recBadge'),
-  btnLocal:    $('btnLocal'),
-  btnDrive:    $('btnDrive'),
-  openSettings:$('openSettings'),
-  settingsModal:$('settingsModal'),
-  closeSettings:$('closeSettings'),
-  helpModal:   $('helpModal'),
-  helpLink:    $('helpLink'),
-  closeHelp:   $('closeHelp'),
-  backToSettings:$('backToSettings'),
-  clientIdInput:$('clientIdInput'),
-  txEndpointInput:$('txEndpointInput'),
-  saveSettings:$('saveSettings'),
   canvas:      $('waveCanvas'),
   idleHint:    $('idleHint'),
   timer:       $('timer'),
@@ -112,7 +89,6 @@ const D = {
   txActions:        $('txActions'),
   txCopyBtn:        $('txCopyBtn'),
   txDownloadBtn:    $('txDownloadBtn'),
-  txDriveBtn:       $('txDriveBtn'),
   // Whisper (Android post-recording)
   whisperProgress:  $('whisperProgress'),
   whisperStatusText:$('whisperStatusText'),
@@ -124,14 +100,10 @@ const ctx = D.canvas.getContext('2d');
 // ── Init ─────────────────────────────────────────────────────────────────────
 async function init() {
   setupCanvas();
-  applyDestination();
   bindEvents();
   initTranscription();
   applyTxToggleUI();
   drawIdle();
-  if (clientId) D.clientIdInput.value = clientId;
-  const savedEndpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
-  if (D.txEndpointInput) D.txEndpointInput.value = savedEndpoint;
   initMicTip();
   await initDB();
   // Clear all saved recordings on page load for privacy (each session starts fresh)
@@ -164,18 +136,7 @@ function setupCanvas() {
 
 // ── Events ────────────────────────────────────────────────────────────────────
 function bindEvents() {
-  D.btnLocal.addEventListener('click', () => setDest('local'));
-  D.btnDrive.addEventListener('click', () => setDest('drive'));
-
   document.getElementById('installBtn')?.addEventListener('click', doInstall);
-  D.openSettings.addEventListener('click', () => openModal(D.settingsModal));
-  D.closeSettings.addEventListener('click', () => closeModal(D.settingsModal));
-  D.helpLink.addEventListener('click', e => { e.preventDefault(); closeModal(D.settingsModal); openModal(D.helpModal); });
-  D.closeHelp.addEventListener('click', () => { closeModal(D.helpModal); openModal(D.settingsModal); });
-  D.backToSettings.addEventListener('click', () => { closeModal(D.helpModal); openModal(D.settingsModal); });
-  D.saveSettings.addEventListener('click', persistSettings);
-  D.settingsModal.addEventListener('click', e => { if (e.target === D.settingsModal) closeModal(D.settingsModal); });
-  D.helpModal.addEventListener('click',     e => { if (e.target === D.helpModal)     closeModal(D.helpModal); });
 
   D.recordBtn.addEventListener('click', startRec);
   D.pauseBtn.addEventListener('click',  pauseRec);
@@ -185,7 +146,6 @@ function bindEvents() {
 
   D.downloadBtn.addEventListener('click', doDownload);
   D.shareBtn.addEventListener('click',    doShare);
-  D.uploadBtn.addEventListener('click',   doDriveUpload);
   D.newBtn.addEventListener('click',      resetAll);
 
   D.clearAllBtn.addEventListener('click', clearAllRecordings);
@@ -207,35 +167,6 @@ function onEscape() {
   if (phase === 'recording' || phase === 'paused') stopRec();
 }
 
-// ── Destination ──────────────────────────────────────────────────────────────
-function setDest(d) {
-  destination = d;
-  localStorage.setItem('dest', d);
-  applyDestination();
-}
-function applyDestination() {
-  D.btnLocal.classList.toggle('active', destination === 'local');
-  D.btnDrive.classList.toggle('active', destination === 'drive');
-}
-
-// ── Settings ──────────────────────────────────────────────────────────────────
-function persistSettings() {
-  const endpoint = (D.txEndpointInput?.value || '').trim();
-  localStorage.setItem('txEndpoint', endpoint);
-
-  const val = D.clientIdInput.value.trim();
-  if (val) {
-    clientId = val;
-    localStorage.setItem('driveClientId', val);
-    tokenClient = null;
-    accessToken = null;
-  }
-  closeModal(D.settingsModal);
-}
-
-// ── Modals ────────────────────────────────────────────────────────────────────
-function openModal(m)  { m.hidden = false; }
-function closeModal(m) { m.hidden = true; }
 
 // ── Transcription ─────────────────────────────────────────────────────────────
 function initTranscription() {
@@ -264,7 +195,6 @@ function initTranscription() {
 
   D.txCopyBtn.addEventListener('click', doCopyTranscript);
   D.txDownloadBtn.addEventListener('click', doDownloadTranscript);
-  D.txDriveBtn.addEventListener('click', doUploadTranscriptToDrive);
 }
 
 function applyTxToggleUI() {
@@ -284,74 +214,74 @@ const GROQ_LANG = {
 };
 
 const DEFAULT_ENDPOINT = 'https://grabtolm-tx.patient-surf-8d06.workers.dev';
-const GROQ_MAX_BYTES   = 20 * 1024 * 1024; // 20 MB safety margin (Groq limit is 25 MB)
-const GROQ_RESAMPLE_HZ = 16000;             // 16 kHz — enough for speech, ~3x smaller
+const GROQ_CHUNK_S     = 240;   // 4 minutes per chunk — well under the 25 MB Groq limit
+const GROQ_SAMPLE_HZ   = 16000; // 16 kHz — sufficient for speech, ~3x smaller than 44.1 kHz
 
-// If the audio blob exceeds GROQ_MAX_BYTES, resample to 16 kHz via OfflineAudioContext
-async function prepareAudioForGroq(blob) {
-  if (blob.size <= GROQ_MAX_BYTES) return { blob, name: 'recording.wav' };
-  try {
-    const arrayBuf  = await blob.arrayBuffer();
-    const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const audioBuf  = await decodeCtx.decodeAudioData(arrayBuf);
-    await decodeCtx.close();
-    const frames   = Math.ceil(audioBuf.duration * GROQ_RESAMPLE_HZ);
-    const offCtx   = new OfflineAudioContext(1, frames, GROQ_RESAMPLE_HZ);
-    const src      = offCtx.createBufferSource();
-    src.buffer     = audioBuf;
-    src.connect(offCtx.destination);
-    src.start();
-    const resampled = await offCtx.startRendering();
-    const small     = encodePCM([resampled.getChannelData(0)], GROQ_RESAMPLE_HZ);
-    console.log(`[Groq] resampled ${(blob.size/1e6).toFixed(1)} MB → ${(small.size/1e6).toFixed(1)} MB`);
-    return { blob: small, name: 'recording.wav' };
-  } catch (e) {
-    console.warn('[Groq] resample failed, sending original:', e);
-    return { blob, name: 'recording.wav' };
-  }
-}
-
-async function startGroqTranscription(wavBlob) {
+// Accepts any audio Blob (WAV or WebM). Splits into 4-min chunks at 16 kHz and
+// sends each to Groq sequentially, combining timestamped results.
+async function startGroqTranscription(audioBlob) {
   const endpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
   D.whisperProgress.classList.remove('hidden');
   D.whisperBarWrap.classList.add('hidden');
 
-  if (!endpoint) {
-    await finishTranscription('', '⚙️ No Transcription Endpoint configured. Go to Settings and paste your Worker URL.');
-    return;
-  }
-
-  D.whisperStatusText.textContent = 'Transcribing…';
-
   try {
-    const lang = GROQ_LANG[txLang] || null;
-    const { blob: audioBlob, name: audioName } = await prepareAudioForGroq(wavBlob);
-    const form = new FormData();
-    form.append('file', audioBlob, audioName);
-    if (lang) form.append('language', lang);
+    D.whisperStatusText.textContent = 'Preparing audio…';
 
-    const res = await fetch(endpoint, { method: 'POST', body: form });
+    // Decode blob (WAV or WebM) to raw AudioBuffer
+    const arrayBuf  = await audioBlob.arrayBuffer();
+    const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuf  = await decodeCtx.decodeAudioData(arrayBuf);
+    await decodeCtx.close();
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Error ${res.status}: ${errText.slice(0, 200)}`);
-    }
+    const totalDuration = audioBuf.duration;
+    const numChunks     = Math.ceil(totalDuration / GROQ_CHUNK_S);
+    const lang          = GROQ_LANG[txLang] || null;
+    let   fullText      = '';
 
-    const data = await res.json();
+    for (let i = 0; i < numChunks; i++) {
+      const startS    = i * GROQ_CHUNK_S;
+      const endS      = Math.min(startS + GROQ_CHUNK_S, totalDuration);
+      const chunkSecs = endS - startS;
 
-    // Build timestamped transcript
-    let text = '';
-    if (data.segments && data.segments.length > 0) {
-      for (const seg of data.segments) {
-        const ts = `[${fmtTime(Math.floor(seg.start))}] `;
-        const t  = (seg.text || '').trim();
-        if (t) text += ts + t + '\n';
+      D.whisperStatusText.textContent = numChunks > 1
+        ? `Transcribing part ${i + 1} of ${numChunks}…`
+        : 'Transcribing…';
+
+      // Resample chunk to 16 kHz via OfflineAudioContext
+      const frames = Math.ceil(chunkSecs * GROQ_SAMPLE_HZ);
+      const offCtx = new OfflineAudioContext(1, frames, GROQ_SAMPLE_HZ);
+      const src    = offCtx.createBufferSource();
+      src.buffer   = audioBuf;
+      src.start(0, startS, chunkSecs);
+      src.connect(offCtx.destination);
+      const resampled = await offCtx.startRendering();
+      const chunkWav  = encodePCM([resampled.getChannelData(0)], GROQ_SAMPLE_HZ);
+
+      // POST chunk to Groq via Cloudflare Worker
+      const form = new FormData();
+      form.append('file', chunkWav, 'recording.wav');
+      if (lang) form.append('language', lang);
+
+      const res = await fetch(endpoint, { method: 'POST', body: form });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Error ${res.status}: ${errText.slice(0, 200)}`);
       }
-    } else if (data.text) {
-      text = data.text.trim();
+
+      const data = await res.json();
+      if (data.segments && data.segments.length > 0) {
+        for (const seg of data.segments) {
+          const ts = `[${fmtTime(Math.floor(seg.start + startS))}] `;
+          const t  = (seg.text || '').trim();
+          if (t) fullText += ts + t + '\n';
+        }
+      } else if (data.text) {
+        const t = data.text.trim();
+        if (t) fullText += (numChunks > 1 ? `[${fmtTime(Math.floor(startS))}] ` : '') + t + '\n';
+      }
     }
 
-    await finishTranscription(text, null);
+    await finishTranscription(fullText.trim(), null);
 
   } catch (err) {
     console.error('[Groq] transcription error:', err);
@@ -383,7 +313,6 @@ async function finishTranscription(text, errorMsg) {
   D.transcriptEdit.contentEditable = 'true';
   D.transcriptEditWrap.classList.remove('hidden');
   D.txActions.classList.remove('hidden');
-  D.txDriveBtn.classList.toggle('hidden', destination !== 'drive');
 
   if (lastSavedId && db) {
     await dbUpdateTranscript(lastSavedId, text.trim());
@@ -543,35 +472,6 @@ function doDownloadTranscript() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-async function doUploadTranscriptToDrive() {
-  const text = (D.transcriptEdit.innerText || D.transcriptEdit.textContent || '').trim();
-  if (!text || !ensureTokenClient()) return;
-  D.txDriveBtn.disabled = true; D.txDriveBtn.textContent = 'Uploading…';
-  try {
-    const folderId = await getOrCreateFolder();
-    const stamp    = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
-    const name     = `transcript-${stamp}.txt`;
-    const meta     = JSON.stringify({ name, mimeType: 'text/plain', parents: [folderId] });
-    const boundary = 'grabtolm_bound';
-    const enc      = new TextEncoder();
-    const p1  = enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n`);
-    const p2  = enc.encode(`\r\n--${boundary}--`);
-    const td  = enc.encode(text);
-    const body = new Uint8Array(p1.length + td.length + p2.length);
-    body.set(p1); body.set(td, p1.length); body.set(p2, p1.length + td.length);
-    await driveReq('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-      body,
-    });
-    D.txDriveBtn.textContent = '✓ Saved';
-    setTimeout(() => { D.txDriveBtn.textContent = 'Drive'; D.txDriveBtn.disabled = false; }, 2500);
-  } catch (err) {
-    if (err.status === 401) { accessToken = null; pendingUpload = false; tokenClient.requestAccessToken(); }
-    else alert('Transcript upload failed: ' + (err.message || 'Unknown error'));
-    D.txDriveBtn.disabled = false; D.txDriveBtn.textContent = 'Drive';
-  }
-}
 
 // ── WAV encoder ───────────────────────────────────────────────────────────────
 function encodePCM(chunks, sampleRate) {
@@ -652,9 +552,9 @@ async function startRec() {
     mobileRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : {});
     mobileRecorder.ondataavailable = e => { if (e.data.size > 0) mobileChunks.push(e.data); };
     mobileRecorder.onstop = async () => {
-      const blob = new Blob(mobileChunks, { type: mobileRecorder.mimeType });
+      const webmBlob = new Blob(mobileChunks, { type: mobileRecorder.mimeType });
       try {
-        const arrayBuf = await blob.arrayBuffer();
+        const arrayBuf = await webmBlob.arrayBuffer();
         const tempCtx  = new (window.AudioContext || window.webkitAudioContext)();
         const audioBuf = await tempCtx.decodeAudioData(arrayBuf);
         await tempCtx.close();
@@ -663,14 +563,14 @@ async function startRec() {
       } catch (err) {
         console.warn('Mobile audio decode failed:', err);
         // Fallback: keep raw WebM so user can at least play/download it
-        wavBlob = blob;
+        wavBlob = webmBlob;
       }
 
       // Show review panel immediately (audio player + download ready)
       await buildWAV();
 
-      // Kick off Groq transcription after showing the panel
-      if (txEnabled) startGroqTranscription(wavBlob);
+      // Send original WebM to Groq — much smaller than WAV, chunked for long recordings
+      if (txEnabled) startGroqTranscription(webmBlob);
     };
     mobileRecorder.start(500);
     return;
@@ -794,19 +694,10 @@ async function buildWAV() {
   D.audioPlayer.src = wavUrl;
   D.recInfo.textContent = `${fmtTime(finalSecs)} · ${fmtSize(wavBlob.size)} · WAV`;
 
-  if (destination === 'drive') {
-    D.localActions.classList.add('hidden');
-    D.driveActions.classList.remove('hidden');
-    D.driveOk.classList.add('hidden');
-    resetUploadBtn();
-  } else {
-    D.driveActions.classList.add('hidden');
-    D.driveOk.classList.add('hidden');
-    D.localActions.classList.remove('hidden');
-    const testFile = new File([], 'test.wav', { type: 'audio/wav' });
-    D.shareBtn.style.display =
-      (navigator.share && navigator.canShare && navigator.canShare({ files: [testFile] })) ? '' : 'none';
-  }
+  D.localActions.classList.remove('hidden');
+  const testFile = new File([], 'test.wav', { type: 'audio/wav' });
+  D.shareBtn.style.display =
+    (navigator.share && navigator.canShare && navigator.canShare({ files: [testFile] })) ? '' : 'none';
 
   // Populate transcript area
   D.transcriptWrap.classList.add('hidden');
@@ -975,84 +866,6 @@ async function doShare() {
   catch (e) { if (e.name !== 'AbortError') doDownload(); }
 }
 
-// ── Google Drive ──────────────────────────────────────────────────────────────
-function ensureTokenClient() {
-  if (!clientId) { openModal(D.settingsModal); return false; }
-  if (!window.google?.accounts?.oauth2) { alert('Google Identity Services not loaded.'); return false; }
-  if (!tokenClient) {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: clientId, scope: DRIVE_SCOPE, callback: handleToken,
-    });
-  }
-  return true;
-}
-function handleToken(resp) {
-  if (resp.error) { alert('Drive auth failed: ' + resp.error); return; }
-  accessToken = resp.access_token;
-  if (pendingUpload) { pendingUpload = false; performUpload(); }
-}
-async function doDriveUpload() {
-  if (!wavBlob) return;
-  if (!ensureTokenClient()) return;
-  D.uploadBtn.disabled = true; D.uploadBtn.textContent = 'Connecting…';
-  if (accessToken) { await performUpload(); }
-  else { pendingUpload = true; tokenClient.requestAccessToken(); }
-}
-async function performUpload() {
-  D.uploadBtn.textContent = 'Uploading…';
-  try {
-    const folderId = await getOrCreateFolder();
-    await uploadFile(folderId);
-    D.uploadBtn.classList.add('hidden');
-    D.driveOk.classList.remove('hidden');
-  } catch (err) {
-    if (err.status === 401) { accessToken = null; pendingUpload = true; tokenClient.requestAccessToken(); return; }
-    resetUploadBtn();
-    alert('Upload failed: ' + (err.message || 'Unknown error'));
-  }
-}
-async function getOrCreateFolder() {
-  const q = `name='${FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const res = await driveReq(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`);
-  if (res.files?.length) return res.files[0].id;
-  const c = await driveReq('https://www.googleapis.com/drive/v3/files', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' }),
-  });
-  return c.id;
-}
-async function uploadFile(folderId) {
-  const name = recFileName();
-  const meta = JSON.stringify({ name, mimeType: 'audio/wav', parents: [folderId] });
-  const boundary = 'grabtolm_bound';
-  const enc = new TextEncoder();
-  const p1  = enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${meta}\r\n--${boundary}\r\nContent-Type: audio/wav\r\n\r\n`);
-  const p2  = enc.encode(`\r\n--${boundary}--`);
-  const ab  = await wavBlob.arrayBuffer();
-  const body = new Uint8Array(p1.length + ab.byteLength + p2.length);
-  body.set(p1); body.set(new Uint8Array(ab), p1.length); body.set(p2, p1.length + ab.byteLength);
-  await driveReq('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-    method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${boundary}` }, body,
-  });
-}
-async function driveReq(url, opts = {}) {
-  const res = await fetch(url, { ...opts, headers: { ...opts.headers, Authorization: `Bearer ${accessToken}` } });
-  if (!res.ok) { const e = new Error(`Drive ${res.status}`); e.status = res.status; throw e; }
-  const text = await res.text(); return text ? JSON.parse(text) : {};
-}
-function resetUploadBtn() {
-  D.uploadBtn.disabled = false;
-  D.uploadBtn.innerHTML = `
-    <svg width="14" height="12" viewBox="0 0 87.3 78">
-      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8h-27.5c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
-      <path d="m43.65 25-13.75-23.8c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44a9.06 9.06 0 0 0-1.2 4.5h27.5z" fill="#00ac47"/>
-      <path d="m73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5h-27.5l5.85 11.5z" fill="#ea4335"/>
-      <path d="m43.65 25 13.75-23.8c-1.35-.8-2.9-1.2-4.5-1.2h-18.5c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
-      <path d="m59.8 53h-32.3l-13.75 23.8c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.45 4.5-1.2z" fill="#2684fc"/>
-      <path d="m73.4 26.5-12.7-22c-.8-1.4-1.95-2.5-3.3-3.3l-13.75 23.8 16.15 27h27.45c0-1.55-.4-3.1-1.2-4.5z" fill="#ffba00"/>
-    </svg>
-    Save to Drive`;
-}
 
 // ── IndexedDB ─────────────────────────────────────────────────────────────────
 function initDB() {
@@ -1123,11 +936,10 @@ function nextRecName() {
 async function autoSave() {
   if (!db || !wavBlob) return;
   const id   = 'rec-' + Date.now();
-  lastSavedId = id; // Whisper will call dbUpdateTranscript(id, text) when done
+  lastSavedId = id; // Groq will call dbUpdateTranscript(id, text) when done
   const date = new Date().toISOString();
-  // On mobile Whisper hasn't run yet — save empty transcript, update later
-  const transcript = (!isMobile && txEnabled) ? txFinalText.trim() : '';
-  const meta = { id, name: nextRecName(), date, duration: finalSecs, size: wavBlob.size, transcript };
+  // Transcript is always filled in after recording by Groq — save empty now, update later
+  const meta = { id, name: nextRecName(), date, duration: finalSecs, size: wavBlob.size, transcript: '' };
   await dbSave(meta, wavBlob);
   await refreshHistory();
 }
