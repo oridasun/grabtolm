@@ -250,9 +250,10 @@ function saveGroqApiKey() {
   }
 }
 
-// Accepts any audio Blob (WAV or WebM). Splits into 4-min chunks at 16 kHz and
-// sends each to Groq directly, combining timestamped results.
+// Mobile: send WebM blob directly to Groq (no resampling — avoids OfflineAudioContext on Android).
+// Desktop: decode WAV, split into 4-min chunks at 16 kHz via OfflineAudioContext.
 async function startGroqTranscription(audioBlob) {
+  const apiKey = localStorage.getItem('groqApiKey') || '';
   D.whisperProgress.classList.remove('hidden');
   D.whisperBarWrap.classList.add('hidden');
 
@@ -264,9 +265,50 @@ async function startGroqTranscription(audioBlob) {
   }
 
   try {
+    const lang = GROQ_LANG[txLang] || null;
+
+    // ── Mobile path: send WebM directly — already compressed, Groq supports it ──
+    if (isMobile) {
+      D.whisperStatusText.textContent = 'Transcribiendo…';
+      const form = new FormData();
+      form.append('file', audioBlob, 'recording.webm');
+      form.append('model', 'whisper-large-v3');
+      form.append('response_format', 'verbose_json');
+      form.append('timestamp_granularities[]', 'segment');
+      if (lang) form.append('language', lang);
+
+      const res = await fetch(GROQ_API_URL, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: form,
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        if (res.status === 401) {
+          localStorage.removeItem('groqApiKey');
+          throw new Error('API key inválida. Toca ⚙ y actualiza tu clave de Groq.');
+        }
+        throw new Error(`Error ${res.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const data = await res.json();
+      let text = '';
+      if (data.segments?.length > 0) {
+        for (const seg of data.segments) {
+          const t = (seg.text || '').trim();
+          if (t) text += `[${fmtTime(Math.floor(seg.start))}] ${t}\n`;
+        }
+      } else if (data.text) {
+        text = data.text.trim();
+      }
+      await finishTranscription(text, null);
+      return;
+    }
+
+    // ── Desktop path: decode WAV + chunk at 16 kHz via OfflineAudioContext ──
     D.whisperStatusText.textContent = 'Preparando audio…';
 
-    // Decode blob (WAV or WebM) to raw AudioBuffer
     const arrayBuf  = await audioBlob.arrayBuffer();
     const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
     const audioBuf  = await decodeCtx.decodeAudioData(arrayBuf);
@@ -274,7 +316,6 @@ async function startGroqTranscription(audioBlob) {
 
     const totalDuration = audioBuf.duration;
     const numChunks     = Math.ceil(totalDuration / GROQ_CHUNK_S);
-    const lang          = GROQ_LANG[txLang] || null;
     let   fullText      = '';
 
     for (let i = 0; i < numChunks; i++) {
@@ -286,7 +327,6 @@ async function startGroqTranscription(audioBlob) {
         ? `Transcribiendo parte ${i + 1} de ${numChunks}…`
         : 'Transcribiendo…';
 
-      // Resample chunk to 16 kHz via OfflineAudioContext
       const frames = Math.ceil(chunkSecs * GROQ_SAMPLE_HZ);
       const offCtx = new OfflineAudioContext(1, frames, GROQ_SAMPLE_HZ);
       const src    = offCtx.createBufferSource();
@@ -296,7 +336,6 @@ async function startGroqTranscription(audioBlob) {
       const resampled = await offCtx.startRendering();
       const chunkWav  = encodePCM([resampled.getChannelData(0)], GROQ_SAMPLE_HZ);
 
-      // POST chunk directly to Groq API
       const form = new FormData();
       form.append('file', chunkWav, 'recording.wav');
       form.append('model', 'whisper-large-v3');
