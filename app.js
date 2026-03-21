@@ -284,6 +284,32 @@ const GROQ_LANG = {
 };
 
 const DEFAULT_ENDPOINT = 'https://grabtolm-tx.patient-surf-8d06.workers.dev';
+const GROQ_MAX_BYTES   = 20 * 1024 * 1024; // 20 MB safety margin (Groq limit is 25 MB)
+const GROQ_RESAMPLE_HZ = 16000;             // 16 kHz — enough for speech, ~3x smaller
+
+// If the audio blob exceeds GROQ_MAX_BYTES, resample to 16 kHz via OfflineAudioContext
+async function prepareAudioForGroq(blob) {
+  if (blob.size <= GROQ_MAX_BYTES) return { blob, name: 'recording.wav' };
+  try {
+    const arrayBuf  = await blob.arrayBuffer();
+    const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const audioBuf  = await decodeCtx.decodeAudioData(arrayBuf);
+    await decodeCtx.close();
+    const frames   = Math.ceil(audioBuf.duration * GROQ_RESAMPLE_HZ);
+    const offCtx   = new OfflineAudioContext(1, frames, GROQ_RESAMPLE_HZ);
+    const src      = offCtx.createBufferSource();
+    src.buffer     = audioBuf;
+    src.connect(offCtx.destination);
+    src.start();
+    const resampled = await offCtx.startRendering();
+    const small     = encodePCM([resampled.getChannelData(0)], GROQ_RESAMPLE_HZ);
+    console.log(`[Groq] resampled ${(blob.size/1e6).toFixed(1)} MB → ${(small.size/1e6).toFixed(1)} MB`);
+    return { blob: small, name: 'recording.wav' };
+  } catch (e) {
+    console.warn('[Groq] resample failed, sending original:', e);
+    return { blob, name: 'recording.wav' };
+  }
+}
 
 async function startGroqTranscription(wavBlob) {
   const endpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
@@ -299,8 +325,9 @@ async function startGroqTranscription(wavBlob) {
 
   try {
     const lang = GROQ_LANG[txLang] || null;
+    const { blob: audioBlob, name: audioName } = await prepareAudioForGroq(wavBlob);
     const form = new FormData();
-    form.append('file', wavBlob, 'recording.wav');
+    form.append('file', audioBlob, audioName);
     if (lang) form.append('language', lang);
 
     const res = await fetch(endpoint, { method: 'POST', body: form });
