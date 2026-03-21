@@ -130,7 +130,7 @@ async function init() {
   applyTxToggleUI();
   drawIdle();
   if (clientId) D.clientIdInput.value = clientId;
-  const savedEndpoint = localStorage.getItem('txEndpoint') || '';
+  const savedEndpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
   if (D.txEndpointInput) D.txEndpointInput.value = savedEndpoint;
   initMicTip();
   await initDB();
@@ -283,8 +283,10 @@ const GROQ_LANG = {
   'zh':'zh','ja':'ja',
 };
 
+const DEFAULT_ENDPOINT = 'https://grabtolm-tx.patient-surf-8d06.workers.dev';
+
 async function startGroqTranscription(wavBlob) {
-  const endpoint = localStorage.getItem('txEndpoint') || '';
+  const endpoint = localStorage.getItem('txEndpoint') || DEFAULT_ENDPOINT;
   D.whisperProgress.classList.remove('hidden');
   D.whisperBarWrap.classList.add('hidden');
 
