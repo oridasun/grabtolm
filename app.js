@@ -677,7 +677,7 @@ function stopRec() {
   // Tracks are released on page unload (see beforeunload handler in PWA section).
   if (scriptProc) { scriptProc.disconnect(); scriptProc = null; }
   if (audioCtx)   { audioCtx.close(); audioCtx = null; }
-  buildWAV().then(() => { if (txEnabled) startGroqTranscription(wavBlob); });
+  buildWAV(); // Desktop: SpeechRecognition transcript shown inside buildWAV()
 }
 
 async function buildWAV() {
@@ -703,9 +703,20 @@ async function buildWAV() {
   D.transcriptWrap.classList.add('hidden');
   D.whisperProgress.classList.add('hidden'); // reset from any previous run
 
-  // Groq transcription runs after buildWAV() for both mobile and desktop
-  D.transcriptEditWrap.classList.add('hidden');
-  D.txActions.classList.add('hidden');
+  if (isMobile && txEnabled) {
+    // Mobile: Groq will fill transcript after buildWAV() — keep area hidden for now
+    D.transcriptEditWrap.classList.add('hidden');
+    D.txActions.classList.add('hidden');
+  } else if (!isMobile && txEnabled && txFinalText.trim()) {
+    // Desktop: Web Speech API transcript available immediately
+    D.transcriptEdit.textContent = txFinalText.trim();
+    D.transcriptEdit.contentEditable = 'true';
+    D.transcriptEditWrap.classList.remove('hidden');
+    D.txActions.classList.remove('hidden');
+  } else {
+    D.transcriptEditWrap.classList.add('hidden');
+    D.txActions.classList.add('hidden');
+  }
 
   D.reviewPanel.hidden = false;
   drawBars(false);
